@@ -108,7 +108,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION (With Retry & Fallback)
+# GEMINI AI ANALYSIS FUNCTION (No Fallback, 3.8-Flash Only)
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
     if failures_df.empty:
@@ -137,7 +137,7 @@ def generate_ai_report(failures_df):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Primary Model: 3.8 Flash (Fast, but can be overloaded)
+                # Use the 3.8-flash model
                 response = client.models.generate_content(
                     model='gemini-3.8-flash',
                     contents=prompt
@@ -148,18 +148,11 @@ def generate_ai_report(failures_df):
                 if "503" in str(e) and attempt < max_retries - 1:
                     time.sleep(3)
                     continue
-                # If it fails 3 times on Flash, try the alternative valid model as a fallback
-                elif attempt == max_retries - 1:
-                    response = client.models.generate_content(
-                        model='gemini-2.5-flash', # Valid fallback model
-                        contents=prompt
-                    )
-                    return response.text
                 else:
+                    # If it's not a 503, or we've exhausted retries, raise the error
                     raise e
                     
     except Exception as e:
-        # Show the actual error so we know what went wrong (API key, model name, etc.)
         return f"⚠️ **AI Analysis Failed:** {e}"
 
 # --------------------------------------------------------------------------- #
