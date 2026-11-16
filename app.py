@@ -4,7 +4,7 @@ import time
 import httpx
 import pandas as pd
 import streamlit as st
-import ollama  # NEW: Local AI import
+import google.generativeai as genai
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
@@ -13,13 +13,8 @@ st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layo
 # --------------------------------------------------------------------------- #
 hide_github_style = """
     <style>
-    /* 1. Hide the entire top header bar (removes Fork, GitHub icon, and hamburger menu) */
     header { visibility: hidden !important; }
-    
-    /* 2. Hide the specific viewer badge container as a backup */
     .viewerBadge_container__1QSob { display: none !important; }
-    
-    /* 3. Hide the Streamlit footer */
     footer { visibility: hidden !important; }
     </style>
 """
@@ -27,6 +22,12 @@ st.markdown(hide_github_style, unsafe_allow_html=True)
 
 st.title("🔎 URL Availability Checker")
 st.caption("Ensure your VPN is connected before running checks.")
+
+# --------------------------------------------------------------------------- #
+# SESSION STATE (Prevents table from disappearing on button click)
+# --------------------------------------------------------------------------- #
+if "results_df" not in st.session_state:
+    st.session_state.results_df = None
 
 # --------------------------------------------------------------------------- #
 # Helpers & Async Checker
@@ -65,7 +66,7 @@ async def check_one(client: httpx.AsyncClient, url: str, idx: int, method: str, 
         }
     
     except httpx.RemoteProtocolError as e:
-        return _err(url, idx, start, "RemoteProtocolError", "Server closed connection unexpectedly. Try lowering concurrency.")
+        return _err(url, idx, start, "RemoteProtocolError", "Server closed connection unexpectedly.")
     except httpx.TimeoutException as e:
         return _err(url, idx, start, "Timeout", str(e))
     except httpx.ConnectError as e:
@@ -84,21 +85,12 @@ def _err(url, idx, start, kind, detail):
 
 async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, proxy, progress_cb):
     sem = asyncio.Semaphore(concurrency)
-    
-    transport = httpx.AsyncHTTPTransport(
-        retries=2,
-        verify=verify_tls,
-        proxy=proxy,
-    )
-    
+    transport = httpx.AsyncHTTPTransport(retries=2, verify=verify_tls, proxy=proxy)
     limits = httpx.Limits(max_connections=concurrency * 2, max_keepalive_connections=concurrency)
     
     client_kwargs = {
-        "limits": limits,
-        "headers": headers,
-        "follow_redirects": True,
-        "transport": transport,
-        "http2": False,
+        "limits": limits, "headers": headers, "follow_redirects": True,
+        "transport": transport, "http2": False,
     }
 
     results = []
@@ -116,20 +108,18 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# NEW: AI ANALYSIS FUNCTION (Local Ollama)
+# GEMINI AI ANALYSIS FUNCTION
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
-    """Sends the failure data to the local Ollama instance for analysis."""
     if failures_df.empty:
         return "No failures to analyze."
 
-    # Create a compact string of failures for the AI to read
     error_data = ""
     for _, row in failures_df.head(40).iterrows():
         error_data += f"- URL: {row['url']} | Status: {row['status']} | Error: {row['error_type']} | Detail: {row['error_detail']}\n"
 
     prompt = f"""
-    You are an expert QA and Network Engineer. I ran a bulk URL check on internal corporate VPN URLs.
+    You are an expert QA and Network Engineer. I ran a bulk URL check.
     Here are the failures:
     
     {error_data}
@@ -142,13 +132,12 @@ def generate_ai_report(failures_df):
     """
 
     try:
-        # Call local Ollama instance (must be running in background)
-        response = ollama.chat(model='llama3.2', messages=[
-            {'role': 'user', 'content': prompt},
-        ])
-        return response['message']['content']
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        return response.text
     except Exception as e:
-        return f"⚠️ **AI Analysis Failed:** Is Ollama running on this machine? (Error: {e})"
+        return f"⚠️ **AI Analysis Failed:** Please check your API key in Streamlit Secrets. (Error: {e})"
 
 # --------------------------------------------------------------------------- #
 # UI
@@ -161,12 +150,11 @@ with col_input:
 
 with col_settings:
     st.subheader("Check settings")
-    concurrency = st.slider("Concurrency", 1, 100, 10, help="If you get RemoteProtocolErrors, lower this number.")
-    timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 30.0, 1.0, help="Increased default to 30s for slow product pages.")
+    concurrency = st.slider("Concurrency", 1, 100, 10)
+    timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 30.0, 1.0)
     method = st.selectbox("HTTP method", ["GET", "HEAD"], 0)
-    
     proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
-    verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
+    verify_tls = st.checkbox("Verify TLS certificate", value=False)
     headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "Mozilla/5.0..."}', height=100)
 
 # Parse
@@ -182,6 +170,7 @@ if headers_input.strip():
     except Exception as e: 
         st.warning(f"Invalid JSON: {e}")
 
+# Run Button
 if st.button("Run checks", type="primary", disabled=not urls):
     progress_bar = st.progress(0.0)
     
@@ -190,12 +179,18 @@ if st.button("Run checks", type="primary", disabled=not urls):
         lambda d, t: progress_bar.progress(d / t)
     ))
     
+    # Save the results to Session State so they don't disappear
     df = pd.DataFrame(results)
     df["Result"] = df["success"].apply(lambda x: "✅ SUCCESS" if x else "❌ FAILURE")
-    
     cols = ["url", "Result", "status", "latency_ms", "error_type", "error_detail", "final_url", "redirects"]
-    df = df[cols]
+    st.session_state.results_df = df[cols]
 
+# --------------------------------------------------------------------------- #
+# DISPLAY RESULTS (Reads from Session State)
+# --------------------------------------------------------------------------- #
+if st.session_state.results_df is not None:
+    df = st.session_state.results_df
+    
     st.write("### Results")
     
     def color_rows(row):
@@ -217,14 +212,11 @@ if st.button("Run checks", type="primary", disabled=not urls):
     if not failures.empty:
         st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
         
-        # --------------------------------------------------------------------------- #
-        # NEW: AI TRIAGE BUTTON
-        # --------------------------------------------------------------------------- #
         st.write("---")
         st.subheader("🧠 AI Root-Cause Analysis")
-        st.write("Let a local AI model analyze the failure logs and explain *why* they failed.")
+        st.write("Let Google Gemini AI analyze the failure logs and explain *why* they failed.")
         
         if st.button("Analyze Failures with AI"):
-            with st.spinner("Local AI (Llama 3.2) is analyzing the failures..."):
+            with st.spinner("Google Gemini is analyzing the failures..."):
                 ai_report = generate_ai_report(failures)
                 st.info(ai_report)
