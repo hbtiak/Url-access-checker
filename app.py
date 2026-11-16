@@ -9,6 +9,7 @@ import streamlit as st
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 st.title("🔎 URL Availability Checker")
+st.caption("Runs entirely on this machine. Ensure your VPN is connected if checking internal URLs.")
 
 # --------------------------------------------------------------------------- #
 # Helpers & Async Checker
@@ -93,13 +94,10 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
-# Toggle for VPN logic
-vpn_required = st.checkbox("VPN required for these URLs", value=False, 
-                           help="If checked, enables proxy and TLS bypass settings. If unchecked, checks public URLs directly.")
-
 col_input, col_settings = st.columns([3, 2])
+
 with col_input:
-    urls_text = st.text_area("Paste URLs (one per line)", height=220, placeholder="https://www.google.com/")
+    urls_text = st.text_area("Paste URLs (one per line)", height=250, placeholder="https://proshop-jsp.dormakaba.com/de-de/1001_XX/...")
     uploaded = st.file_uploader("…or upload a .txt / .csv file", type=["txt", "csv"])
 
 with col_settings:
@@ -108,25 +106,23 @@ with col_settings:
     timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 15.0, 1.0)
     method = st.selectbox("HTTP method", ["HEAD", "GET"], 1)
     
-    # Only show VPN settings if the VPN checkbox is enabled
-    if vpn_required:
-        proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
-        verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
-        headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "...", "Cookie": "..."}', height=100)
-    else:
-        proxy_url = None
-        verify_tls = True
-        headers_input = ""
+    # VPN/Corporate Network Settings (Always visible now)
+    proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
+    verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
+    headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "...", "Cookie": "..."}', height=100)
 
 # Parse
 raw = urls_text or ""
-if uploaded: raw += "\n" + uploaded.read().decode("utf-8", errors="ignore")
+if uploaded: 
+    raw += "\n" + uploaded.read().decode("utf-8", errors="ignore")
 urls = parse_urls(raw)
 
 headers = {}
 if headers_input.strip():
-    try: headers = json.loads(headers_input)
-    except Exception as e: st.warning(f"Invalid JSON: {e}")
+    try: 
+        headers = json.loads(headers_input)
+    except Exception as e: 
+        st.warning(f"Invalid JSON: {e}")
 
 if st.button("Run checks", type="primary", disabled=not urls):
     progress_bar = st.progress(0.0)
@@ -149,32 +145,11 @@ if st.button("Run checks", type="primary", disabled=not urls):
 
     st.write("### Results")
     
-    # Display with color-coded success/failure
-    st.dataframe(
-        df,
-        use_container_width=True,
-        column_config={
-            "success": st.column_config.CheckboxColumn(
-                "Success",
-                help="Green = OK, Red = Failed",
-                default=False,
-            ),
-            "Result": st.column_config.TextColumn(
-                "Result",
-                width="medium",
-            ),
-        },
-        hide_index=True
-    )
-    
     # Apply CSS styling to make success green and failure red
-    # (Streamlit dataframe doesn't natively support background colors for booleans easily, 
-    # so we use a custom HTML table for precise coloring)
     def color_rows(row):
         color = '#d4edda' if row['Result'] == '✅ SUCCESS' else '#f8d7da'
         return [f'background-color: {color}'] * len(row)
 
-    st.write("### Color-coded Report")
     styled_df = df.style.apply(color_rows, axis=1)
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
@@ -188,6 +163,6 @@ if st.button("Run checks", type="primary", disabled=not urls):
     )
     
     # Summary error message
-    failures = df[~df['success']] if 'success' in df else df[~df['Result'].str.contains("SUCCESS")]
+    failures = df[df['Result'] == '❌ FAILURE']
     if not failures.empty:
         st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
