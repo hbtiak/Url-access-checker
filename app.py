@@ -4,7 +4,7 @@ import time
 import httpx
 import pandas as pd
 import streamlit as st
-import google.generativeai as genai
+from google import genai  # NEW SDK IMPORT
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
@@ -108,7 +108,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION
+# GEMINI AI ANALYSIS FUNCTION (Using new google-genai SDK)
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
     if failures_df.empty:
@@ -132,9 +132,13 @@ def generate_ai_report(failures_df):
     """
 
     try:
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(prompt)
+        # New SDK syntax for Gemini
+        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         return response.text
     except Exception as e:
         return f"⚠️ **AI Analysis Failed:** Please check your API key in Streamlit Secrets. (Error: {e})"
