@@ -11,7 +11,7 @@ st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layo
 st.title("🔎 URL Availability Checker")
 
 # --------------------------------------------------------------------------- #
-# Helpers & Async Checker (Same as before, with proxy support added)
+# Helpers & Async Checker
 # --------------------------------------------------------------------------- #
 def parse_urls(text: str) -> list[str]:
     urls = []
@@ -65,7 +65,6 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     sem = asyncio.Semaphore(concurrency)
     limits = httpx.Limits(max_connections=concurrency * 2, max_keepalive_connections=concurrency)
     
-    # Configure proxy if provided
     client_kwargs = {
         "limits": limits,
         "headers": headers,
@@ -75,7 +74,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     if proxy:
         client_kwargs["proxy"] = proxy
     else:
-        client_kwargs["trust_env"] = True  # Try to use system proxy if no explicit proxy provided
+        client_kwargs["trust_env"] = True
 
     results = []
     async with httpx.AsyncClient(**client_kwargs) as client:
@@ -94,7 +93,9 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
 # --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
-vpn_required = st.checkbox("VPN required for these URLs", value=True)
+# Toggle for VPN logic
+vpn_required = st.checkbox("VPN required for these URLs", value=False, 
+                           help="If checked, enables proxy and TLS bypass settings. If unchecked, checks public URLs directly.")
 
 col_input, col_settings = st.columns([3, 2])
 with col_input:
@@ -105,13 +106,17 @@ with col_settings:
     st.subheader("Check settings")
     concurrency = st.slider("Concurrency", 1, 200, 50)
     timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 15.0, 1.0)
-    method = st.selectbox("HTTP method", ["HEAD", "GET"], 1) # Default to GET for internal apps
+    method = st.selectbox("HTTP method", ["HEAD", "GET"], 1)
     
-    # --- NEW PROXY SETTING ---
-    proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
-    
-    verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
-    headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "...", "Cookie": "..."}', height=100)
+    # Only show VPN settings if the VPN checkbox is enabled
+    if vpn_required:
+        proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
+        verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
+        headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "...", "Cookie": "..."}', height=100)
+    else:
+        proxy_url = None
+        verify_tls = True
+        headers_input = ""
 
 # Parse
 raw = urls_text or ""
@@ -124,17 +129,65 @@ if headers_input.strip():
     except Exception as e: st.warning(f"Invalid JSON: {e}")
 
 if st.button("Run checks", type="primary", disabled=not urls):
-    progress = st.progress(0.0)
+    progress_bar = st.progress(0.0)
     
+    # Run async checks
     results = asyncio.run(run_checks(
         urls, concurrency, timeout, method, headers, verify_tls, proxy_url or None,
-        lambda d, t: progress.progress(d / t)
+        lambda d, t: progress_bar.progress(d / t)
     ))
     
+    # Create DataFrame
     df = pd.DataFrame(results)
-    st.dataframe(df, use_container_width=True)
     
-    # Show failure details clearly
-    failures = df[~df['success']]
+    # Add a clean string Result column for readability
+    df["Result"] = df["success"].apply(lambda x: "✅ SUCCESS" if x else "❌ FAILURE")
+    
+    # Reorder columns for better display
+    cols = ["url", "Result", "status", "latency_ms", "error_type", "error_detail", "final_url", "redirects"]
+    df = df[cols]
+
+    st.write("### Results")
+    
+    # Display with color-coded success/failure
+    st.dataframe(
+        df,
+        use_container_width=True,
+        column_config={
+            "success": st.column_config.CheckboxColumn(
+                "Success",
+                help="Green = OK, Red = Failed",
+                default=False,
+            ),
+            "Result": st.column_config.TextColumn(
+                "Result",
+                width="medium",
+            ),
+        },
+        hide_index=True
+    )
+    
+    # Apply CSS styling to make success green and failure red
+    # (Streamlit dataframe doesn't natively support background colors for booleans easily, 
+    # so we use a custom HTML table for precise coloring)
+    def color_rows(row):
+        color = '#d4edda' if row['Result'] == '✅ SUCCESS' else '#f8d7da'
+        return [f'background-color: {color}'] * len(row)
+
+    st.write("### Color-coded Report")
+    styled_df = df.style.apply(color_rows, axis=1)
+    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+
+    # Download button
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="⬇️ Download Report (CSV)",
+        data=csv,
+        file_name='url_check_report.csv',
+        mime='text/csv',
+    )
+    
+    # Summary error message
+    failures = df[~df['success']] if 'success' in df else df[~df['Result'].str.contains("SUCCESS")]
     if not failures.empty:
-        st.error(f"{len(failures)} URL(s) failed. Check the 'error_detail' column.")
+        st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
