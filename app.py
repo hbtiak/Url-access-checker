@@ -136,7 +136,7 @@ def generate_ai_report(failures_df):
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-2.0-flash',   # or 'gemini-2.5-flash'
             contents=prompt
         )
         return response.text
