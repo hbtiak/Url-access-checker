@@ -4,6 +4,7 @@ import time
 import httpx
 import pandas as pd
 import streamlit as st
+import ollama  # NEW: Local AI import
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
@@ -115,6 +116,41 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
+# NEW: AI ANALYSIS FUNCTION (Local Ollama)
+# --------------------------------------------------------------------------- #
+def generate_ai_report(failures_df):
+    """Sends the failure data to the local Ollama instance for analysis."""
+    if failures_df.empty:
+        return "No failures to analyze."
+
+    # Create a compact string of failures for the AI to read
+    error_data = ""
+    for _, row in failures_df.head(40).iterrows():
+        error_data += f"- URL: {row['url']} | Status: {row['status']} | Error: {row['error_type']} | Detail: {row['error_detail']}\n"
+
+    prompt = f"""
+    You are an expert QA and Network Engineer. I ran a bulk URL check on internal corporate VPN URLs.
+    Here are the failures:
+    
+    {error_data}
+    
+    Please provide a concise, 3-bullet-point report:
+    1. What is the likely root cause of these failures? (e.g., VPN drop, server error, auth issue).
+    2. Group the failures into logical categories (e.g., "All 404s", "All Timeouts").
+    3. What is the recommended next step for the engineering team?
+    Do not invent URLs. Be direct.
+    """
+
+    try:
+        # Call local Ollama instance (must be running in background)
+        response = ollama.chat(model='llama3.2', messages=[
+            {'role': 'user', 'content': prompt},
+        ])
+        return response['message']['content']
+    except Exception as e:
+        return f"⚠️ **AI Analysis Failed:** Is Ollama running on this machine? (Error: {e})"
+
+# --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
 col_input, col_settings = st.columns([3, 2])
@@ -180,3 +216,15 @@ if st.button("Run checks", type="primary", disabled=not urls):
     failures = df[df['Result'] == '❌ FAILURE']
     if not failures.empty:
         st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
+        
+        # --------------------------------------------------------------------------- #
+        # NEW: AI TRIAGE BUTTON
+        # --------------------------------------------------------------------------- #
+        st.write("---")
+        st.subheader("🧠 AI Root-Cause Analysis")
+        st.write("Let a local AI model analyze the failure logs and explain *why* they failed.")
+        
+        if st.button("Analyze Failures with AI"):
+            with st.spinner("Local AI (Llama 3.2) is analyzing the failures..."):
+                ai_report = generate_ai_report(failures)
+                st.info(ai_report)
