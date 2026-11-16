@@ -137,7 +137,7 @@ def generate_ai_report(failures_df):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Primary Model
+                # Primary Model: 3.8 Flash (Fast, but can be overloaded)
                 response = client.models.generate_content(
                     model='gemini-3.8-flash',
                     contents=prompt
@@ -148,10 +148,10 @@ def generate_ai_report(failures_df):
                 if "503" in str(e) and attempt < max_retries - 1:
                     time.sleep(3)
                     continue
-                # If it fails 3 times on Flash, try Pro as a fallback
+                # If it fails 3 times on Flash, try the alternative valid model as a fallback
                 elif attempt == max_retries - 1:
                     response = client.models.generate_content(
-                        model='gemini-3.8-pro',
+                        model='gemini-2.5-flash', # Valid fallback model
                         contents=prompt
                     )
                     return response.text
@@ -159,7 +159,8 @@ def generate_ai_report(failures_df):
                     raise e
                     
     except Exception as e:
-        return f"⚠️ **AI Analysis Failed:** Google's servers are currently busy. Please try again in a few minutes. (Error: {e})"
+        # Show the actual error so we know what went wrong (API key, model name, etc.)
+        return f"⚠️ **AI Analysis Failed:** {e}"
 
 # --------------------------------------------------------------------------- #
 # UI
