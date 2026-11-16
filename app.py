@@ -97,7 +97,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
 col_input, col_settings = st.columns([3, 2])
 
 with col_input:
-    urls_text = st.text_area("Paste URLs (one per line)", height=250, placeholder="https://proshop-jsp.dormakaba.com/de-de/1001_XX/...")
+    urls_text = st.text_area("Paste URLs (one per line)", height=250, placeholder="https://www.google.com/")
     uploaded = st.file_uploader("…or upload a .txt / .csv file", type=["txt", "csv"])
 
 with col_settings:
