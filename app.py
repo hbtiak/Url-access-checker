@@ -108,7 +108,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION (Using new google-genai SDK)
+# GEMINI AI ANALYSIS FUNCTION (With Retry & Fallback)
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
     if failures_df.empty:
@@ -132,16 +132,34 @@ def generate_ai_report(failures_df):
     """
 
     try:
-        # New SDK syntax for Gemini
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
-        response = client.models.generate_content(
-            model='gemini-3.8-flash',   # Change from gemini-2.0-flash
-            contents=prompt
-        )
-        return response.text
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Primary Model
+                response = client.models.generate_content(
+                    model='gemini-3.8-flash',
+                    contents=prompt
+                )
+                return response.text
+            except Exception as e:
+                # If it's a 503 (busy), wait and retry
+                if "503" in str(e) and attempt < max_retries - 1:
+                    time.sleep(3)
+                    continue
+                # If it fails 3 times on Flash, try Pro as a fallback
+                elif attempt == max_retries - 1:
+                    response = client.models.generate_content(
+                        model='gemini-3.8-pro',
+                        contents=prompt
+                    )
+                    return response.text
+                else:
+                    raise e
+                    
     except Exception as e:
-        return f"⚠️ **AI Analysis Failed:** Please check your API key in Streamlit Secrets. (Error: {e})"
+        return f"⚠️ **AI Analysis Failed:** Google's servers are currently busy. Please try again in a few minutes. (Error: {e})"
 
 # --------------------------------------------------------------------------- #
 # UI
