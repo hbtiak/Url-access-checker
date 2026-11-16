@@ -8,14 +8,18 @@ import streamlit as st
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
 # --------------------------------------------------------------------------- #
-# HIDE GITHUB ICON (Streamlit Cloud UI)
+# HIDE GITHUB ICON, FORK BUTTON, AND TOP-RIGHT MENU
 # --------------------------------------------------------------------------- #
 hide_github_style = """
     <style>
-    /* Hides the GitHub icon and Fork button in the top right */
-    .viewerBadge_container__1QSob { display: none; }
-    /* Hides the entire top header bar (optional, uncomment if needed) */
-    /* header { visibility: hidden; } */
+    /* 1. Hide the entire top header bar (removes Fork, GitHub icon, and hamburger menu) */
+    header { visibility: hidden !important; }
+    
+    /* 2. Hide the specific viewer badge container as a backup */
+    .viewerBadge_container__1QSob { display: none !important; }
+    
+    /* 3. Hide the Streamlit footer */
+    footer { visibility: hidden !important; }
     </style>
 """
 st.markdown(hide_github_style, unsafe_allow_html=True)
@@ -44,7 +48,6 @@ def parse_urls(text: str) -> list[str]:
 async def check_one(client: httpx.AsyncClient, url: str, idx: int, method: str, timeout: float) -> dict:
     start = time.perf_counter()
     try:
-        # We use a try/except block specifically for the RemoteProtocolError
         if method.upper() == "HEAD":
             resp = await client.head(url, timeout=timeout)
             if resp.status_code in (403, 405, 501):
@@ -60,9 +63,8 @@ async def check_one(client: httpx.AsyncClient, url: str, idx: int, method: str, 
             "error_type": None, "error_detail": None, "body_snippet": (resp.text or "")[:200],
         }
     
-    # Catch the specific error that was in your screenshot
     except httpx.RemoteProtocolError as e:
-        return _err(url, idx, start, "RemoteProtocolError", "Server closed connection unexpectedly. Try lowering concurrency or increasing timeout.")
+        return _err(url, idx, start, "RemoteProtocolError", "Server closed connection unexpectedly. Try lowering concurrency.")
     except httpx.TimeoutException as e:
         return _err(url, idx, start, "Timeout", str(e))
     except httpx.ConnectError as e:
@@ -82,9 +84,8 @@ def _err(url, idx, start, kind, detail):
 async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, proxy, progress_cb):
     sem = asyncio.Semaphore(concurrency)
     
-    # 1. Add a Retry Transport to handle flaky VPN connections
     transport = httpx.AsyncHTTPTransport(
-        retries=2, # Automatically retry failed connections twice
+        retries=2,
         verify=verify_tls,
         proxy=proxy,
     )
@@ -96,7 +97,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
         "headers": headers,
         "follow_redirects": True,
         "transport": transport,
-        "http2": False, # Force HTTP/1.1 - fixes many corporate server issues
+        "http2": False,
     }
 
     results = []
@@ -124,7 +125,6 @@ with col_input:
 
 with col_settings:
     st.subheader("Check settings")
-    # Note: I changed the default concurrency to 10 to protect the server
     concurrency = st.slider("Concurrency", 1, 100, 10, help="If you get RemoteProtocolErrors, lower this number.")
     timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 30.0, 1.0, help="Increased default to 30s for slow product pages.")
     method = st.selectbox("HTTP method", ["GET", "HEAD"], 0)
