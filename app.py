@@ -6,6 +6,20 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
+
+# --------------------------------------------------------------------------- #
+# HIDE GITHUB ICON (Streamlit Cloud UI)
+# --------------------------------------------------------------------------- #
+hide_github_style = """
+    <style>
+    /* Hides the GitHub icon and Fork button in the top right */
+    .viewerBadge_container__1QSob { display: none; }
+    /* Hides the entire top header bar (optional, uncomment if needed) */
+    /* header { visibility: hidden; } */
+    </style>
+"""
+st.markdown(hide_github_style, unsafe_allow_html=True)
+
 st.title("🔎 URL Availability Checker")
 st.caption("Ensure your VPN is connected before running checks.")
 
