@@ -1,15 +1,13 @@
 import asyncio
 import json
 import time
-from typing import Optional
-
 import httpx
 import pandas as pd
 import streamlit as st
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 st.title("🔎 URL Availability Checker")
-st.caption("Runs entirely on this machine. Ensure your VPN is connected if checking internal URLs.")
+st.caption("Ensure your VPN is connected before running checks.")
 
 # --------------------------------------------------------------------------- #
 # Helpers & Async Checker
@@ -32,6 +30,7 @@ def parse_urls(text: str) -> list[str]:
 async def check_one(client: httpx.AsyncClient, url: str, idx: int, method: str, timeout: float) -> dict:
     start = time.perf_counter()
     try:
+        # We use a try/except block specifically for the RemoteProtocolError
         if method.upper() == "HEAD":
             resp = await client.head(url, timeout=timeout)
             if resp.status_code in (403, 405, 501):
@@ -46,14 +45,18 @@ async def check_one(client: httpx.AsyncClient, url: str, idx: int, method: str, 
             "latency_ms": round((time.perf_counter() - start) * 1000, 1),
             "error_type": None, "error_detail": None, "body_snippet": (resp.text or "")[:200],
         }
+    
+    # Catch the specific error that was in your screenshot
+    except httpx.RemoteProtocolError as e:
+        return _err(url, idx, start, "RemoteProtocolError", "Server closed connection unexpectedly. Try lowering concurrency or increasing timeout.")
     except httpx.TimeoutException as e:
-        return _err(url, idx, start, "timeout", str(e))
+        return _err(url, idx, start, "Timeout", str(e))
     except httpx.ConnectError as e:
         msg = str(e)
-        kind = "dns_error" if any(k in msg.lower() for k in ("name", "getaddrinfo", "nodename")) else "connect_error"
+        kind = "DNS Error" if any(k in msg.lower() for k in ("name", "getaddrinfo", "nodename")) else "Connection Error"
         return _err(url, idx, start, kind, msg)
     except Exception as e:
-        return _err(url, idx, start, "other", f"{type(e).__name__}: {e}")
+        return _err(url, idx, start, "Other Error", f"{type(e).__name__}: {e}")
 
 def _err(url, idx, start, kind, detail):
     return {
@@ -64,18 +67,23 @@ def _err(url, idx, start, kind, detail):
 
 async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, proxy, progress_cb):
     sem = asyncio.Semaphore(concurrency)
+    
+    # 1. Add a Retry Transport to handle flaky VPN connections
+    transport = httpx.AsyncHTTPTransport(
+        retries=2, # Automatically retry failed connections twice
+        verify=verify_tls,
+        proxy=proxy,
+    )
+    
     limits = httpx.Limits(max_connections=concurrency * 2, max_keepalive_connections=concurrency)
     
     client_kwargs = {
         "limits": limits,
         "headers": headers,
-        "verify": verify_tls,
         "follow_redirects": True,
+        "transport": transport,
+        "http2": False, # Force HTTP/1.1 - fixes many corporate server issues
     }
-    if proxy:
-        client_kwargs["proxy"] = proxy
-    else:
-        client_kwargs["trust_env"] = True
 
     results = []
     async with httpx.AsyncClient(**client_kwargs) as client:
@@ -97,19 +105,19 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
 col_input, col_settings = st.columns([3, 2])
 
 with col_input:
-    urls_text = st.text_area("Paste URLs (one per line)", height=250, placeholder="https://www.google.com/")
+    urls_text = st.text_area("Paste URLs (one per line)", height=250, placeholder="https://google.com/")
     uploaded = st.file_uploader("…or upload a .txt / .csv file", type=["txt", "csv"])
 
 with col_settings:
     st.subheader("Check settings")
-    concurrency = st.slider("Concurrency", 1, 200, 50)
-    timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 15.0, 1.0)
-    method = st.selectbox("HTTP method", ["HEAD", "GET"], 1)
+    # Note: I changed the default concurrency to 10 to protect the server
+    concurrency = st.slider("Concurrency", 1, 100, 10, help="If you get RemoteProtocolErrors, lower this number.")
+    timeout = st.number_input("Timeout (seconds)", 1.0, 120.0, 30.0, 1.0, help="Increased default to 30s for slow product pages.")
+    method = st.selectbox("HTTP method", ["GET", "HEAD"], 0)
     
-    # VPN/Corporate Network Settings (Always visible now)
     proxy_url = st.text_input("Proxy URL (if required by VPN)", placeholder="http://proxy.company.com:8080")
     verify_tls = st.checkbox("Verify TLS certificate", value=False, help="Uncheck for corporate VPNs that re-sign certificates.")
-    headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "...", "Cookie": "..."}', height=100)
+    headers_input = st.text_area("Extra headers (JSON)", placeholder='{"User-Agent": "Mozilla/5.0..."}', height=100)
 
 # Parse
 raw = urls_text or ""
@@ -127,25 +135,19 @@ if headers_input.strip():
 if st.button("Run checks", type="primary", disabled=not urls):
     progress_bar = st.progress(0.0)
     
-    # Run async checks
     results = asyncio.run(run_checks(
         urls, concurrency, timeout, method, headers, verify_tls, proxy_url or None,
         lambda d, t: progress_bar.progress(d / t)
     ))
     
-    # Create DataFrame
     df = pd.DataFrame(results)
-    
-    # Add a clean string Result column for readability
     df["Result"] = df["success"].apply(lambda x: "✅ SUCCESS" if x else "❌ FAILURE")
     
-    # Reorder columns for better display
     cols = ["url", "Result", "status", "latency_ms", "error_type", "error_detail", "final_url", "redirects"]
     df = df[cols]
 
     st.write("### Results")
     
-    # Apply CSS styling to make success green and failure red
     def color_rows(row):
         color = '#d4edda' if row['Result'] == '✅ SUCCESS' else '#f8d7da'
         return [f'background-color: {color}'] * len(row)
@@ -153,7 +155,6 @@ if st.button("Run checks", type="primary", disabled=not urls):
     styled_df = df.style.apply(color_rows, axis=1)
     st.dataframe(styled_df, use_container_width=True, hide_index=True)
 
-    # Download button
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
         label="⬇️ Download Report (CSV)",
@@ -162,7 +163,6 @@ if st.button("Run checks", type="primary", disabled=not urls):
         mime='text/csv',
     )
     
-    # Summary error message
     failures = df[df['Result'] == '❌ FAILURE']
     if not failures.empty:
         st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
