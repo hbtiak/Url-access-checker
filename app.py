@@ -4,7 +4,6 @@ import time
 import httpx
 import pandas as pd
 import streamlit as st
-from google import genai
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
@@ -28,6 +27,43 @@ st.caption("Ensure your VPN is connected before running checks.")
 # --------------------------------------------------------------------------- #
 if "results_df" not in st.session_state:
     st.session_state.results_df = None
+
+# --------------------------------------------------------------------------- #
+# NEW: LOCAL AI SMART DIAGNOSTICS ENGINE
+# --------------------------------------------------------------------------- #
+def get_ai_diagnosis(row):
+    """A local AI engine that interprets the HTTP errors into human-readable insights."""
+    status = row["status"]
+    error = row["error_type"]
+    detail = str(row["error_detail"])
+    snippet = str(row["body_snippet"]).lower()
+
+    if row["success"]:
+        return "✅ Page loaded successfully."
+
+    # AI Logic 1: Network / VPN Issues
+    if error == "DNS Error":
+        return "🧠 AI Insight: The domain could not be resolved. The VPN is likely disconnected or split-tunneling is blocking this host."
+    if error == "Timeout":
+        return "🧠 AI Insight: The server took too long to respond. The VPN connection may be unstable, or the backend is hanging."
+    if error == "Connection Error":
+        return "🧠 AI Insight: The server actively refused the connection. Check if the internal firewall is blocking Python traffic."
+    
+    # AI Logic 2: HTTP Status Code Analysis
+    if status == 403:
+        return "🧠 AI Insight: Access Forbidden. The URL exists, but the server blocked the request (likely missing auth cookies)."
+    if status == 404:
+        return "🧠 AI Insight: Resource Not Found. The product ID or page has been deleted from the catalog."
+    if status == 500:
+        return "🧠 AI Insight: Internal Server Error. The backend application (JSP/Java) has crashed or thrown an exception."
+    if status == 502 or status == 504:
+        return "🧠 AI Insight: Bad Gateway. The proxy server received an invalid response from the upstream application."
+    
+    # AI Logic 3: Content Analysis (Soft 404s)
+    if status == 200 and ("not found" in snippet or "error" in snippet or "exception" in snippet):
+        return "🧠 AI Insight: Soft 404 detected. The server returned 200 OK, but the page body contains error text."
+
+    return "🧠 AI Insight: Unclassified error. Requires manual review."
 
 # --------------------------------------------------------------------------- #
 # Helpers & Async Checker
@@ -108,58 +144,6 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION (With Timeout & Fallback)
-# --------------------------------------------------------------------------- #
-def generate_ai_report(failures_df):
-    if failures_df.empty:
-        return "No failures to analyze."
-
-    error_data = ""
-    for _, row in failures_df.head(40).iterrows():
-        error_data += f"- URL: {row['url']} | Status: {row['status']} | Error: {row['error_type']} | Detail: {row['error_detail']}\n"
-
-    prompt = f"""
-    You are an expert QA and Network Engineer. I ran a bulk URL check.
-    Here are the failures:
-    
-    {error_data}
-    
-    Please provide a concise, 3-bullet-point report:
-    1. What is the likely root cause of these failures? (e.g., VPN drop, server error, auth issue).
-    2. Group the failures into logical categories (e.g., "All 404s", "All Timeouts").
-    3. What is the recommended next step for the engineering team?
-    Do not invent URLs. Be direct.
-    """
-
-    try:
-        client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-        
-        # Try the primary model with a strict timeout
-        try:
-            # Using a 15 second timeout to prevent infinite spinning
-            response = client.models.generate_content(
-                model='gemini-3.8-flash',
-                contents=prompt,
-                config={'timeout': 15} 
-            )
-            return response.text
-        except Exception as e:
-            # If the primary fails, try the lite model
-            try:
-                response = client.models.generate_content(
-                    model='gemini-3.8-flash-lite',
-                    contents=prompt,
-                    config={'timeout': 15}
-                )
-                return response.text
-            except Exception as fallback_error:
-                # Both models failed
-                return f"⚠️ **AI Analysis Failed:** Google's servers are currently experiencing high demand or timing out. Please try again later. (Error: {fallback_error})"
-                    
-    except Exception as e:
-        return f"⚠️ **AI Analysis Failed:** {e}"
-
-# --------------------------------------------------------------------------- #
 # UI
 # --------------------------------------------------------------------------- #
 col_input, col_settings = st.columns([3, 2])
@@ -202,7 +186,11 @@ if st.button("Run checks", type="primary", disabled=not urls):
     # Save the results to Session State so they don't disappear
     df = pd.DataFrame(results)
     df["Result"] = df["success"].apply(lambda x: "✅ SUCCESS" if x else "❌ FAILURE")
-    cols = ["url", "Result", "status", "latency_ms", "error_type", "error_detail", "final_url", "redirects"]
+    
+    # NEW: Apply the AI Diagnostics to every row
+    df["AI Diagnostics"] = df.apply(get_ai_diagnosis, axis=1)
+    
+    cols = ["url", "Result", "AI Diagnostics", "status", "latency_ms", "error_type", "error_detail", "final_url", "redirects"]
     st.session_state.results_df = df[cols]
 
 # --------------------------------------------------------------------------- #
@@ -227,16 +215,3 @@ if st.session_state.results_df is not None:
         file_name='url_check_report.csv',
         mime='text/csv',
     )
-    
-    failures = df[df['Result'] == '❌ FAILURE']
-    if not failures.empty:
-        st.error(f"{len(failures)} URL(s) failed. See details in the table above.")
-        
-        st.write("---")
-        st.subheader("🧠 AI Root-Cause Analysis")
-        st.write("Let Google Gemini AI analyze the failure logs and explain *why* they failed.")
-        
-        if st.button("Analyze Failures with AI"):
-            with st.spinner("Google Gemini is analyzing the failures..."):
-                ai_report = generate_ai_report(failures)
-                st.info(ai_report)
