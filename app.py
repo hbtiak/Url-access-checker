@@ -4,7 +4,7 @@ import time
 import httpx
 import pandas as pd
 import streamlit as st
-from google import genai  # NEW SDK IMPORT
+from google import genai
 
 st.set_page_config(page_title="URL Availability Checker", page_icon="🔎", layout="wide")
 
@@ -24,7 +24,7 @@ st.title("🔎 URL Availability Checker")
 st.caption("Ensure your VPN is connected before running checks.")
 
 # --------------------------------------------------------------------------- #
-# SESSION STATE (Prevents table from disappearing on button click)
+# SESSION STATE
 # --------------------------------------------------------------------------- #
 if "results_df" not in st.session_state:
     st.session_state.results_df = None
@@ -108,7 +108,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION (With Fallback Mechanism)
+# GEMINI AI ANALYSIS FUNCTION (With Timeout & Fallback)
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
     if failures_df.empty:
@@ -134,32 +134,27 @@ def generate_ai_report(failures_df):
     try:
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
-        # Fallback chain: Try the main model, then fallback to lite
-        models_to_try = ['gemini-3.8-flash', 'gemini-3.8-flash-lite']
-        
-        for model_name in models_to_try:
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt
-                    )
-                    return response.text
-                except Exception as e:
-                    # If it's a 503 (busy), wait and retry the same model
-                    if "503" in str(e) and attempt < max_retries - 1:
-                        time.sleep(3)
-                        continue
-                    # If we exhausted retries on this model, move to the next one in the list
-                    elif "503" in str(e):
-                        break
-                    else:
-                        # If it's a fatal error (like 404 or 401), stop entirely
-                        raise e
-                        
-        # If both models fail with 503
-        return "⚠️ **AI Analysis Failed:** Google's servers are currently experiencing high demand. Please try again in a few minutes."
+        # Try the primary model with a strict timeout
+        try:
+            # Using a 15 second timeout to prevent infinite spinning
+            response = client.models.generate_content(
+                model='gemini-3.8-flash',
+                contents=prompt,
+                config={'timeout': 15} 
+            )
+            return response.text
+        except Exception as e:
+            # If the primary fails, try the lite model
+            try:
+                response = client.models.generate_content(
+                    model='gemini-3.8-flash-lite',
+                    contents=prompt,
+                    config={'timeout': 15}
+                )
+                return response.text
+            except Exception as fallback_error:
+                # Both models failed
+                return f"⚠️ **AI Analysis Failed:** Google's servers are currently experiencing high demand or timing out. Please try again later. (Error: {fallback_error})"
                     
     except Exception as e:
         return f"⚠️ **AI Analysis Failed:** {e}"
