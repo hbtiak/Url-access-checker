@@ -108,7 +108,7 @@ async def run_checks(urls, concurrency, timeout, method, headers, verify_tls, pr
     return results
 
 # --------------------------------------------------------------------------- #
-# GEMINI AI ANALYSIS FUNCTION (No Fallback, 3.8-Flash Only)
+# GEMINI AI ANALYSIS FUNCTION (With Fallback Mechanism)
 # --------------------------------------------------------------------------- #
 def generate_ai_report(failures_df):
     if failures_df.empty:
@@ -134,23 +134,32 @@ def generate_ai_report(failures_df):
     try:
         client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
         
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Use the 3.8-flash model
-                response = client.models.generate_content(
-                    model='gemini-3.8-flash',
-                    contents=prompt
-                )
-                return response.text
-            except Exception as e:
-                # If it's a 503 (busy), wait and retry
-                if "503" in str(e) and attempt < max_retries - 1:
-                    time.sleep(3)
-                    continue
-                else:
-                    # If it's not a 503, or we've exhausted retries, raise the error
-                    raise e
+        # Fallback chain: Try the main model, then fallback to lite
+        models_to_try = ['gemini-3.8-flash', 'gemini-3.8-flash-lite']
+        
+        for model_name in models_to_try:
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt
+                    )
+                    return response.text
+                except Exception as e:
+                    # If it's a 503 (busy), wait and retry the same model
+                    if "503" in str(e) and attempt < max_retries - 1:
+                        time.sleep(3)
+                        continue
+                    # If we exhausted retries on this model, move to the next one in the list
+                    elif "503" in str(e):
+                        break
+                    else:
+                        # If it's a fatal error (like 404 or 401), stop entirely
+                        raise e
+                        
+        # If both models fail with 503
+        return "⚠️ **AI Analysis Failed:** Google's servers are currently experiencing high demand. Please try again in a few minutes."
                     
     except Exception as e:
         return f"⚠️ **AI Analysis Failed:** {e}"
